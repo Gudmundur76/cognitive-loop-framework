@@ -28,7 +28,7 @@ export class MemoryLayer {
   private readonly store: RuVectorStore;
   private readonly pipeline: EmbeddingPipeline;
 
-  constructor(namespace: string, config: MemoryLayerConfig = {}) {
+  constructor(namespace: string = 'default', config: MemoryLayerConfig = {}) {
     this.extractor = new ASTExtractor();
     this.writer = new GraphWriter();
     this.store = new RuVectorStore(
