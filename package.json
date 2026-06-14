@@ -11,6 +11,7 @@
   "license": "ISC",
   "type": "module",
   "dependencies": {
+    "openai": "^6.42.0",
     "tree-sitter": "^0.25.0",
     "tree-sitter-typescript": "^0.23.2"
   },
