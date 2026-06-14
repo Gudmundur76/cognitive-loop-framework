@@ -64,3 +64,25 @@ export function createLoop(config: CognitiveLoopConfig = {}): {
 
   return { orchestrator, dispatcher, meta };
 }
+
+// ─── Training Module Re-exports ───────────────────────────────────────────────────────
+// The training flywheel is part of the cognitive loop system.
+// Re-export from the training module for a single import surface.
+export {
+  createTrainingPipeline,
+  ClaimsCorpusGenerator,
+  CorpusWatcher,
+  IncrementalTrainer,
+} from '../training/index.js';
+export type {
+  TrainingPipelineConfig,
+  TrainingPipeline,
+  VerdictEvent,
+  ContradictionEvent,
+  EntityRecord,
+  ClaimsTrainingPair,
+  CorpusReadyStats,
+  ReadyCallback,
+  TrainerConfig,
+  TrainingResult,
+} from '../training/index.js';
