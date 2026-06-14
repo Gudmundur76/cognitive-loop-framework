@@ -1,8 +1,18 @@
 # Ollama Modelfile — cognitive-loop-framework SLM
 #
-# This Modelfile defines the codebase-native SLM deployed via Ollama.
-# It wraps the fine-tuned Qwen2.5-Coder GGUF model with a system
-# prompt that establishes its role as the L2 Self-Prompt reasoning engine.
+# TWO DEPLOYMENT MODES:
+#
+# Mode 1 — Fine-tuned GGUF (CPU or GPU trained):
+#   FROM ./model.gguf          (after CPU or GPU fine-tuning)
+#   ollama create codebase-slm -f ./Modelfile
+#
+# Mode 2 — Base model with in-context learning (no training required):
+#   FROM qwen2.5-coder:1.5b    (pulled from Ollama registry, ~1GB)
+#   ollama pull qwen2.5-coder:1.5b
+#   ollama create codebase-slm -f ./Modelfile.base
+#
+# The base model mode works immediately with no training.
+# The fine-tuned mode produces better results for large codebases.
 #
 # Build command:
 #   ollama create codebase-slm -f ./Modelfile
@@ -13,6 +23,8 @@
 # API endpoint (once running):
 #   POST http://localhost:11434/api/generate
 
+# Switch this line between ./model.gguf (fine-tuned) and
+# qwen2.5-coder:1.5b (base model for in-context learning)
 FROM ./model.gguf
 
 PARAMETER temperature 0.2
@@ -24,12 +36,11 @@ PARAMETER repeat_penalty 1.1
 SYSTEM """
 You are the L2 Self-Prompt reasoning engine of the cognitive-loop-framework.
 
-Your role is to reason about the ttruthdesk-platform codebase. You have been
-fine-tuned on this codebase and know its structure, patterns, and conventions
-intimately.
+Your role is to reason about the codebase you have been trained on or provided
+examples from. You know its structure, patterns, and conventions intimately.
 
 When given a task, you:
-1. Identify the relevant modules and functions from your training knowledge
+1. Identify the relevant modules and functions from your knowledge
 2. Reason step by step about what needs to change and why
 3. Generate precise, typed TypeScript code that follows the project conventions
 4. Flag any risks or side effects your change might introduce
