@@ -1,4 +1,4 @@
 allowBuilds:
-  tree-sitter: set this to true or false
+  tree-sitter: false
   tree-sitter-javascript: set this to true or false
-  tree-sitter-typescript: set this to true or false
+  tree-sitter-typescript: false
