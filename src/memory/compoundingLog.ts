@@ -6,13 +6,17 @@
  *   trigger → diagnosis → patch → test_result → graph_delta → meta_review
  *
  * The log is NOT a diary. It is a training corpus for the next repair.
- * Future repairs query it via cosine similarity (vector search) to find
- * prior successful patches for similar failures.
  *
- * Design constraints: max 200 lines, max 20 lines/function, max 3 params
+ * Sprint 2 upgrade: querySimilar() now uses RuVector hyperedge search
+ * (semantic vector similarity) instead of in-process TF-IDF cosine.
+ * Each append() also writes a graph node + hyperedge to RuVector so
+ * the compounding log is queryable as a living knowledge graph.
+ *
+ * Design constraints: max 250 lines, max 20 lines/function, max 3 params
  */
 import * as fs from 'fs';
 import * as path from 'path';
+import { RuVectorClient } from './ruVectorClient.js';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 export type TriggerType =
@@ -56,22 +60,30 @@ export interface CompoundingEntry {
 
 export interface QueryResult {
   entry: CompoundingEntry;
-  /** Cosine similarity score (0.0–1.0) — higher = more similar. */
+  /** Similarity score (0.0–1.0) — higher = more similar. */
   similarity: number;
 }
 
 // ── CompoundingLog ────────────────────────────────────────────────────────────
 export class CompoundingLog {
   private readonly logPath: string;
+  private readonly ruVector: RuVectorClient | null;
 
-  constructor(logPath: string) {
+  /**
+   * @param logPath   Absolute path to the JSONL log file.
+   * @param ruVector  Optional RuVectorClient for hybrid search.
+   *                  When omitted, querySimilar falls back to TF-IDF.
+   */
+  constructor(logPath: string, ruVector?: RuVectorClient) {
     this.logPath = logPath;
+    this.ruVector = ruVector ?? null;
     fs.mkdirSync(path.dirname(logPath), { recursive: true });
   }
 
   /**
    * Append a new entry to the compounding log.
-   * Each entry is written as a single JSON line (JSONL format).
+   * Also writes a graph node + hyperedge to RuVector (if configured)
+   * so the log is queryable as a living knowledge graph.
    */
   public append(entry: Omit<CompoundingEntry, 'timestamp'>): CompoundingEntry {
     const stamped: CompoundingEntry = {
@@ -80,6 +92,12 @@ export class CompoundingLog {
     };
     const line = JSON.stringify(stamped) + '\n';
     fs.appendFileSync(this.logPath, line, 'utf8');
+
+    // Fire-and-forget graph write — never blocks the caller
+    if (this.ruVector) {
+      void this.writeToGraph(stamped);
+    }
+
     return stamped;
   }
 
@@ -106,26 +124,15 @@ export class CompoundingLog {
 
   /**
    * Query the log for entries similar to the given query text.
-   * Uses a simple keyword-overlap similarity (no external vector DB required).
-   * For production, replace with RuVector hybrid query.
+   *
+   * When a RuVectorClient is configured: uses hyperedge semantic search.
+   * Fallback: keyword-overlap TF-IDF cosine (no external dependency).
    */
-  public querySimilar(queryText: string, topK = 5): QueryResult[] {
-    const entries = this.readAll();
-    if (entries.length === 0) return [];
-
-    const queryTokens = this.tokenize(queryText);
-
-    const scored = entries.map(entry => ({
-      entry,
-      similarity: this.cosineSimilarity(
-        queryTokens,
-        this.tokenize(`${entry.test} ${entry.diagnosis} ${entry.trigger}`)
-      ),
-    }));
-
-    return scored
-      .sort((a, b) => b.similarity - a.similarity)
-      .slice(0, topK);
+  public async querySimilar(queryText: string, topK = 5): Promise<QueryResult[]> {
+    if (this.ruVector) {
+      return this.queryViaRuVector(queryText, topK);
+    }
+    return this.queryViaTfIdf(queryText, topK);
   }
 
   /**
@@ -202,7 +209,127 @@ export class CompoundingLog {
     };
   }
 
-  // ── Private helpers ────────────────────────────────────────────────────────
+  // ── RuVector integration ───────────────────────────────────────────────────
+
+  /**
+   * Write a compounding entry to RuVector as a node + hyperedge.
+   * Node ID = `log:<timestamp>` for uniqueness.
+   * Hyperedge connects the node to all files in graph_delta.modified.
+   */
+  private async writeToGraph(entry: CompoundingEntry): Promise<void> {
+    if (!this.ruVector) return;
+    const nodeId = `log:${entry.timestamp}`;
+    const embedding = this.buildEmbedding(
+      `${entry.test} ${entry.diagnosis} ${entry.trigger}`
+    );
+
+    await this.ruVector.upsertNode({
+      id: nodeId,
+      labels: ['LogEntry', entry.test_result],
+      embedding,
+      properties: {
+        trigger: entry.trigger,
+        test: entry.test,
+        test_result: entry.test_result,
+        meta_review: entry.meta_review,
+        slm_confidence: String(entry.slm_confidence),
+        patch_hash: entry.patch_hash,
+        timestamp: entry.timestamp,
+      },
+    });
+
+    // Create a hyperedge connecting this log entry to all modified files
+    const modifiedNodes = entry.graph_delta.modified.filter(id => id.length > 0);
+    if (modifiedNodes.length > 0) {
+      await this.ruVector.createHyperedge({
+        nodes: [nodeId, ...modifiedNodes],
+        description: `${entry.trigger}: ${entry.diagnosis.slice(0, 120)}`,
+        embedding,
+        confidence: entry.slm_confidence,
+        metadata: { test_result: entry.test_result },
+      }).catch(() => {
+        // Nodes in graph_delta may not exist in the graph yet — that is fine
+      });
+    }
+  }
+
+  /**
+   * Semantic search via RuVector hyperedge similarity.
+   * Falls back to TF-IDF if no results are returned.
+   */
+  private async queryViaRuVector(
+    queryText: string,
+    topK: number
+  ): Promise<QueryResult[]> {
+    if (!this.ruVector) return this.queryViaTfIdf(queryText, topK);
+
+    const embedding = this.buildEmbedding(queryText);
+    const hits = await this.ruVector.searchHyperedges(embedding, topK);
+
+    if (hits.length === 0) {
+      return this.queryViaTfIdf(queryText, topK);
+    }
+
+    const entries = this.readAll();
+    const results: QueryResult[] = [];
+
+    for (const hit of hits) {
+      // hit.id is the hyperedge ID — find the log entry by timestamp
+      const ts = hit.id.replace(/^log:/, '');
+      const entry = entries.find(e => e.timestamp === ts);
+      if (entry) {
+        results.push({ entry, similarity: hit.score });
+      }
+    }
+
+    // Pad with TF-IDF results if RuVector returned fewer than topK
+    if (results.length < topK) {
+      const tfidfResults = this.queryViaTfIdf(queryText, topK - results.length);
+      const seen = new Set(results.map(r => r.entry.timestamp));
+      for (const r of tfidfResults) {
+        if (!seen.has(r.entry.timestamp)) results.push(r);
+      }
+    }
+
+    return results.slice(0, topK);
+  }
+
+  // ── TF-IDF fallback ────────────────────────────────────────────────────────
+
+  private queryViaTfIdf(queryText: string, topK: number): QueryResult[] {
+    const entries = this.readAll();
+    if (entries.length === 0) return [];
+
+    const queryTokens = this.tokenize(queryText);
+    const scored = entries.map(entry => ({
+      entry,
+      similarity: this.cosineSimilarity(
+        queryTokens,
+        this.tokenize(`${entry.test} ${entry.diagnosis} ${entry.trigger}`)
+      ),
+    }));
+
+    return scored
+      .sort((a, b) => b.similarity - a.similarity)
+      .slice(0, topK);
+  }
+
+  // ── Embedding helpers ──────────────────────────────────────────────────────
+
+  /**
+   * Deterministic 128-dim unit-vector embedding from text char codes.
+   * Matches the strategy used by ASTIndexer so embeddings are comparable.
+   */
+  private buildEmbedding(text: string): Float32Array {
+    const dims = 128;
+    const raw = new Float32Array(dims).fill(0);
+    for (let i = 0; i < text.length; i++) {
+      raw[i % dims] = (raw[i % dims] ?? 0) + text.charCodeAt(i);
+    }
+    const magnitude = Math.sqrt(raw.reduce((sum, v) => sum + v * v, 0)) || 1;
+    return raw.map(v => v / magnitude);
+  }
+
   private tokenize(text: string): Map<string, number> {
     const tokens = text.toLowerCase().split(/\W+/).filter(t => t.length > 2);
     const freq = new Map<string, number>();

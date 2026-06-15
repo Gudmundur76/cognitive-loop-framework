@@ -104,26 +104,27 @@ describe('CompoundingLog.readAll', () => {
 
 // ── QuerySimilar ──────────────────────────────────────────────────────────────
 describe('CompoundingLog.querySimilar', () => {
-  it('returns empty array when log is empty', () => {
+  it('returns empty array when log is empty', async () => {
     const { log } = makeLog();
-    expect(log.querySimilar('rate limiter')).toEqual([]);
+    const results = await log.querySimilar('rate limiter');
+    expect(results).toEqual([]);
   });
 
-  it('returns results sorted by similarity descending', () => {
+  it('returns results sorted by similarity descending', async () => {
     const { log } = makeLog();
     log.append(makeEntry({ test: 'rate-limiter-test', diagnosis: 'rate limiter resets on restart' }));
     log.append(makeEntry({ test: 'unrelated-test', diagnosis: 'database connection pool exhausted' }));
-    const results = log.querySimilar('rate limiter restart');
+    const results = await log.querySimilar('rate limiter restart');
     expect(results.length).toBeGreaterThan(0);
     expect(results[0]!.similarity).toBeGreaterThanOrEqual(results[results.length - 1]!.similarity);
   });
 
-  it('respects topK limit', () => {
+  it('respects topK limit', async () => {
     const { log } = makeLog();
     for (let i = 0; i < 10; i++) {
       log.append(makeEntry({ test: `test-${i}`, diagnosis: `diagnosis ${i}` }));
     }
-    const results = log.querySimilar('diagnosis', 3);
+    const results = await log.querySimilar('diagnosis', 3);
     expect(results.length).toBeLessThanOrEqual(3);
   });
 });

@@ -8,15 +8,21 @@
  *   POST /cognitive/ingest   — L0: receive a verdict event from ttruthdesk
  *   POST /cognitive/verdict  — L1+L2: get a structured verdict for a claim
  *   POST /cognitive/repair   — L3+L4: trigger self-healing on a test failure
+ *   GET  /cognitive/graph    — query the RuVector knowledge graph
  *   GET  /health             — health check
  *   GET  /cognitive/status   — loop status and metrics
  *
- * Design constraints: max 200 lines, max 20 lines/function, max 3 params
+ * Sprint 2: RuVectorClient injected into constructor and wired into
+ * ingest (graph node write), verdict (hybrid search), and graph endpoint.
+ *
+ * Design constraints: max 300 lines, max 20 lines/function, max 3 params
  */
 import * as http from 'http';
 import * as crypto from 'crypto';
 import { createTrainingPipeline, type TrainingPipeline } from '../training/index.js';
 import { CompoundingLog } from '../memory/compoundingLog.js';
+import { RuVectorClient, type RuVectorClientConfig } from '../memory/ruVectorClient.js';
+import { ASTIndexer } from '../indexer/astIndexer.js';
 import type { VerdictEvent } from '../training/claimsCorpusGenerator.js';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -28,6 +34,8 @@ export interface ServerConfig {
   trainingThreshold?: number;
   scriptPath?: string;
   outputPath?: string;
+  /** RuVector config — omit to disable graph memory. */
+  ruVector?: RuVectorClientConfig;
 }
 
 interface IngestRequest {
@@ -45,13 +53,21 @@ interface RepairRequest {
   filePath?: string;
 }
 
+interface GraphQueryRequest {
+  cypher?: string;
+  nodeId?: string;
+  hops?: number;
+}
+
 type JsonBody = Record<string, unknown>;
 
 // ── Server ────────────────────────────────────────────────────────────────────
 export class CognitiveLoopServer {
-  private readonly config: Required<ServerConfig>;
+  private readonly config: Required<Omit<ServerConfig, 'ruVector'>> & { ruVector?: RuVectorClientConfig };
   private readonly pipeline: TrainingPipeline;
   private readonly log: CompoundingLog;
+  private readonly ruVector: RuVectorClient | null;
+  private readonly indexer: ASTIndexer | null;
   private server: http.Server | null = null;
   private startTime = Date.now();
 
@@ -81,6 +97,7 @@ export class CognitiveLoopServer {
         config.outputPath ??
         process.env['TRAINING_OUTPUT_PATH'] ??
         '/data/adapter',
+      ruVector: config.ruVector,
     };
 
     this.pipeline = createTrainingPipeline({
@@ -90,7 +107,19 @@ export class CognitiveLoopServer {
       outputPath: this.config.outputPath,
     });
 
-    this.log = new CompoundingLog(this.config.compoundingLogPath);
+    // Wire RuVectorClient into CompoundingLog for hybrid search
+    this.ruVector = this.config.ruVector
+      ? new RuVectorClient(this.config.ruVector)
+      : null;
+
+    this.log = new CompoundingLog(
+      this.config.compoundingLogPath,
+      this.ruVector ?? undefined
+    );
+
+    this.indexer = this.ruVector
+      ? new ASTIndexer(this.ruVector, { useMockEmbeddings: true })
+      : null;
   }
 
   /** Start the HTTP server. */
@@ -145,6 +174,10 @@ export class CognitiveLoopServer {
       const body = await this.readBody(req);
       return this.handleRepair(res, body);
     }
+    if (method === 'POST' && url === '/cognitive/graph') {
+      const body = await this.readBody(req);
+      return this.handleGraph(res, body);
+    }
 
     this.sendJson(res, 404, { ok: false, error: 'Not found' });
   }
@@ -155,7 +188,6 @@ export class CognitiveLoopServer {
     res: http.ServerResponse,
     body: JsonBody
   ): void {
-    // Verify HMAC signature if secret is configured
     if (this.config.webhookSecret) {
       const sig = req.headers['x-webhook-signature'] as string | undefined;
       if (!sig || !this.verifySignature(JSON.stringify(body), sig)) {
@@ -170,20 +202,16 @@ export class CognitiveLoopServer {
       return;
     }
 
-    // Generate training pairs and append to corpus
     const pairs = this.pipeline.generator.processVerdictEvent(event);
-
-    // Check if corpus has grown enough to trigger training
     this.pipeline.watcher.check();
 
-    // Append to compounding log
     this.log.append({
       trigger: 'verdict_event',
       test: event.claimId,
       diagnosis: `Verdict: ${event.verdict} (confidence: ${event.confidence})`,
       patch_hash: '',
       test_result: 'PASS',
-      graph_delta: { added: [], removed: [], modified: [event.claimId] },
+      graph_delta: { added: [event.claimId], removed: [], modified: [] },
       slm_confidence: event.confidence,
       frontier_explored: 0,
       meta_review: 'APPROVED',
@@ -195,6 +223,7 @@ export class CognitiveLoopServer {
       pairsGenerated: pairs.length,
       types: pairs.map(p => p.type),
       claimId: event.claimId,
+      graphEnabled: this.ruVector !== null,
     });
   }
 
@@ -206,19 +235,22 @@ export class CognitiveLoopServer {
       return;
     }
 
-    // Query compounding log for similar prior verdicts
-    const similar = this.log.querySimilar(req.claimText, 3);
+    // Hybrid search: RuVector semantic (if available) + TF-IDF fallback
+    const similarPromise = this.log.querySimilar(req.claimText, 3);
 
-    this.sendJson(res, 200, {
-      ok: true,
-      claimText: req.claimText,
-      domain: req.domain ?? 'general',
-      priorSimilarVerdicts: similar.map(r => ({
-        test: r.entry.test,
-        diagnosis: r.entry.diagnosis,
-        similarity: r.similarity,
-      })),
-      note: 'Full L1+L2 inference requires Ollama. Query the SLM at POST /api/generate on :11434.',
+    void similarPromise.then(similar => {
+      this.sendJson(res, 200, {
+        ok: true,
+        claimText: req.claimText,
+        domain: req.domain ?? 'general',
+        priorSimilarVerdicts: similar.map(r => ({
+          test: r.entry.test,
+          diagnosis: r.entry.diagnosis,
+          similarity: r.similarity,
+        })),
+        graphEnabled: this.ruVector !== null,
+        note: 'Full L1+L2 inference requires Ollama. Query the SLM at POST /api/generate on :11434.',
+      });
     });
   }
 
@@ -230,33 +262,71 @@ export class CognitiveLoopServer {
       return;
     }
 
-    // Find similar prior repairs (positive examples for the SLM)
-    const priorSuccess = this.log.querySimilar(req.errorOutput, 3)
-      .filter(r => r.entry.test_result === 'PASS');
+    void this.log.querySimilar(req.errorOutput, 6).then(similar => {
+      const priorSuccess = similar.filter(r => r.entry.test_result === 'PASS');
+      const priorFail = similar.filter(r => r.entry.test_result === 'FAIL');
 
-    // Find prior failures (negative examples)
-    const priorFail = this.log.querySimilar(req.errorOutput, 3)
-      .filter(r => r.entry.test_result === 'FAIL');
+      const entry = this.log.append({
+        trigger: 'test_failure',
+        test: req.testName,
+        diagnosis: `Repair triggered for: ${req.errorOutput.slice(0, 200)}`,
+        patch_hash: '',
+        test_result: 'FAIL',
+        graph_delta: {
+          added: [],
+          removed: [],
+          modified: req.filePath ? [req.filePath] : [],
+        },
+        slm_confidence: 0,
+        frontier_explored: 0,
+        meta_review: 'PENDING',
+      });
 
-    // Append pending entry to log
-    const entry = this.log.append({
-      trigger: 'test_failure',
-      test: req.testName,
-      diagnosis: `Repair triggered for: ${req.errorOutput.slice(0, 200)}`,
-      patch_hash: '',
-      test_result: 'FAIL',
-      graph_delta: { added: [], removed: [], modified: req.filePath ? [req.filePath] : [] },
-      slm_confidence: 0,
-      frontier_explored: 0,
-      meta_review: 'PENDING',
+      this.sendJson(res, 200, {
+        ok: true,
+        entryTimestamp: entry.timestamp,
+        priorSuccessfulRepairs: priorSuccess.length,
+        priorFailedRepairs: priorFail.length,
+        context: this.buildRepairContext(req, priorSuccess.map(r => r.entry)),
+      });
     });
+  }
 
-    this.sendJson(res, 200, {
-      ok: true,
-      entryTimestamp: entry.timestamp,
-      priorSuccessfulRepairs: priorSuccess.length,
-      priorFailedRepairs: priorFail.length,
-      context: this.buildRepairContext(req, priorSuccess.map(r => r.entry)),
+  // ── Graph — query the RuVector knowledge graph ────────────────────────────
+  private handleGraph(res: http.ServerResponse, body: JsonBody): void {
+    if (!this.ruVector) {
+      this.sendJson(res, 503, {
+        ok: false,
+        error: 'RuVector not configured. Pass ruVector config to ServerConfig.',
+      });
+      return;
+    }
+
+    const req = body as GraphQueryRequest;
+
+    if (req.cypher) {
+      void this.ruVector.query(req.cypher).then(result => {
+        this.sendJson(res, 200, { ok: true, ...result });
+      }).catch(err => {
+        this.sendJson(res, 500, { ok: false, error: String(err) });
+      });
+      return;
+    }
+
+    if (req.nodeId) {
+      const hops = req.hops ?? 2;
+      void this.ruVector.kHopNeighbors(req.nodeId, hops).then(neighbors => {
+        this.sendJson(res, 200, { ok: true, nodeId: req.nodeId, hops, neighbors });
+      }).catch(err => {
+        this.sendJson(res, 500, { ok: false, error: String(err) });
+      });
+      return;
+    }
+
+    void this.ruVector.stats().then(stats => {
+      this.sendJson(res, 200, { ok: true, stats });
+    }).catch(err => {
+      this.sendJson(res, 500, { ok: false, error: String(err) });
     });
   }
 
@@ -266,7 +336,8 @@ export class CognitiveLoopServer {
       ok: true,
       status: 'healthy',
       uptimeMs: Date.now() - this.startTime,
-      version: '0.1.0',
+      version: '0.2.0',
+      graphEnabled: this.ruVector !== null,
     });
   }
 
@@ -281,6 +352,7 @@ export class CognitiveLoopServer {
       log: stats,
       contradictions: contradictions.length,
       flywheel: 'operational',
+      graphEnabled: this.ruVector !== null,
     });
   }
 
