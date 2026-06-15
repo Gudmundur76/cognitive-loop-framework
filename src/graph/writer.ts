@@ -4,13 +4,13 @@ export interface GraphExport {
   nodes: Array<{
     id: string;
     type: string;
-    properties: Record<string, any>;
+    properties: Record<string, unknown>;
   }>;
   edges: Array<{
     source: string;
     target: string;
     type: string;
-    properties: Record<string, any>;
+    properties: Record<string, unknown>;
   }>;
 }
 

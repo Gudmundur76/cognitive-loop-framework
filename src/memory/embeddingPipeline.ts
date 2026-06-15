@@ -123,8 +123,13 @@ export class EmbeddingPipeline {
   /**
    * Deterministic mock embedding for test environments.
    * Produces a 128-dim vector based on the text's char codes.
+   * Exposed as a static method for use outside the class without casting via `any`.
    */
-  private mockEmbedding(text: string): number[] {
+  public static getMockEmbedding(text: string): number[] {
+    return EmbeddingPipeline.computeMockEmbedding(text);
+  }
+
+  private static computeMockEmbedding(text: string): number[] {
     const dims = 128;
     const vector = new Array<number>(dims).fill(0);
     for (let i = 0; i < text.length; i++) {
@@ -134,6 +139,14 @@ export class EmbeddingPipeline {
       vector.reduce((sum, v) => sum + v * v, 0)
     ) || 1;
     return vector.map(v => v / magnitude);
+  }
+
+  /**
+   * Deterministic mock embedding for test environments.
+   * Delegates to the static implementation.
+   */
+  private mockEmbedding(text: string): number[] {
+    return EmbeddingPipeline.computeMockEmbedding(text);
   }
 
   /**

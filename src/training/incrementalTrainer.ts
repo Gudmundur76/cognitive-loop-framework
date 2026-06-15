@@ -12,6 +12,7 @@
  */
 
 import * as path from 'path';
+import { exec as execNode } from 'child_process';
 
 export interface TrainerConfig {
   scriptPath: string;
@@ -101,8 +102,6 @@ export class IncrementalTrainer {
   }
 
   private defaultExec: ExecFunction = (cmd, callback) => {
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const { exec } = require('child_process') as typeof import('child_process');
-    exec(cmd, (error, stdout, stderr) => callback(error, stdout, stderr));
+    execNode(cmd, (error, stdout, stderr) => callback(error, stdout, stderr));
   };
 }

@@ -59,11 +59,8 @@ export class MemoryLayer {
     queryText: string,
     topK = 5
   ): Promise<SimilarityResult[]> {
-    const pipeline = new EmbeddingPipeline(this.store, {
-      useMockEmbeddings: true
-    });
-    // Use mock embedding for query to avoid extra API call in dev
-    const queryVector = (pipeline as any).mockEmbedding(queryText) as number[];
+    // Use deterministic mock embedding for query to avoid extra API call in dev
+    const queryVector = EmbeddingPipeline.getMockEmbedding(queryText);
     return this.store.querySimilar(queryVector, topK);
   }
 

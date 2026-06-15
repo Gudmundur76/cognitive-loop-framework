@@ -4,7 +4,11 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "test": "vitest"
+    "test": "vitest",
+    "test:run": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint src tests --ext .ts --max-warnings 0",
+    "ci": "pnpm typecheck && pnpm lint && pnpm test:run"
   },
   "keywords": [],
   "author": "",
@@ -18,6 +22,9 @@
   },
   "devDependencies": {
     "@types/node": "^25.9.3",
+    "@typescript-eslint/eslint-plugin": "^8.61.0",
+    "@typescript-eslint/parser": "^8.61.0",
+    "eslint": "^10.5.0",
     "ts-node": "^10.9.2",
     "typescript": "^6.0.3",
     "vitest": "^4.1.8"

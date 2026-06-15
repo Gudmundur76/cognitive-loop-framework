@@ -196,7 +196,8 @@ export class CognitiveLoopServer {
       }
     }
 
-    const event = body['event'] as VerdictEvent | undefined;
+    const ingestReq = body as unknown as IngestRequest;
+    const event = ingestReq.event;
     if (!event?.claimId || !event.claimText || !event.verdict) {
       this.sendJson(res, 400, { ok: false, error: 'Missing required event fields' });
       return;

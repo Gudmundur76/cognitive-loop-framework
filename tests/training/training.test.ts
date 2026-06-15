@@ -29,6 +29,20 @@ const mockContradictionEvent = {
   relationship: 'Contradicts'
 };
 
+// ── Typed exec mock helper ────────────────────────────────────────
+
+type ExecCallback = (error: Error | null, stdout: string, stderr: string) => void;
+type ExecFn = (cmd: string, callback: ExecCallback) => void;
+
+function makeExecMock(result: { error?: Error; stdout?: string; stderr?: string } = {}): ExecFn & { mock: { calls: Array<[string, ExecCallback]> } } {
+  const calls: Array<[string, ExecCallback]> = [];
+  const fn = vi.fn((cmd: string, callback: ExecCallback) => {
+    calls.push([cmd, callback]);
+    callback(result.error ?? null, result.stdout ?? '', result.stderr ?? '');
+  }) as ExecFn & { mock: { calls: Array<[string, ExecCallback]> } };
+  return fn;
+}
+
 // ── ClaimsCorpusGenerator Tests ───────────────────────────────────
 
 describe('ClaimsCorpusGenerator', () => {
@@ -170,21 +184,14 @@ describe('IncrementalTrainer', () => {
   });
 
   it('executes python script with --cpu flag when run is called', async () => {
-    // Mock child_process.exec
-    const execMock = vi.fn((cmd, callback) => {
-      callback(null, 'Training complete', '');
-    });
-    vi.doMock('child_process', () => ({ exec: execMock }));
-    
-    // We need to re-import or set the mock directly on the instance for this test pattern
-    // A simpler way is to inject an exec function
-    trainer.setExecFunction(execMock as any);
+    const execMock = makeExecMock({ stdout: 'Training complete' });
+    trainer.setExecFunction(execMock);
     
     await trainer.run();
     
     // run() calls exec twice: once for python pipeline, once for ollama create
     expect(execMock).toHaveBeenCalledTimes(2);
-    const cmd = execMock.mock.calls[0][0];
+    const cmd = execMock.mock.calls[0]?.[0] ?? '';
     expect(cmd).toContain('python');
     expect(cmd).toContain('finetunePipeline.py');
     expect(cmd).toContain('--cpu');
@@ -192,16 +199,14 @@ describe('IncrementalTrainer', () => {
   });
 
   it('updates ollama model after training completes', async () => {
-    const execMock = vi.fn((cmd, callback) => {
-      callback(null, 'Success', '');
-    });
-    trainer.setExecFunction(execMock as any);
+    const execMock = makeExecMock({ stdout: 'Success' });
+    trainer.setExecFunction(execMock);
     
     await trainer.run();
     
     // Should have called exec twice: once for python, once for ollama
     expect(execMock).toHaveBeenCalledTimes(2);
-    const cmd2 = execMock.mock.calls[1][0];
+    const cmd2 = execMock.mock.calls[1]?.[0] ?? '';
     expect(cmd2).toContain('ollama create');
   });
 });
