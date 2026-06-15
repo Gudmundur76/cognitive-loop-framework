@@ -229,7 +229,7 @@ export class CognitiveLoopServer {
 
   // ── L1+L2: Verdict — classify a claim using the local SLM ─────────────────
   private handleVerdict(res: http.ServerResponse, body: JsonBody): void {
-    const req = body as VerdictRequest;
+    const req = body as unknown as VerdictRequest;
     if (!req.claimText) {
       this.sendJson(res, 400, { ok: false, error: 'claimText is required' });
       return;
@@ -256,7 +256,7 @@ export class CognitiveLoopServer {
 
   // ── L3+L4: Repair — self-healing on test failure ──────────────────────────
   private handleRepair(res: http.ServerResponse, body: JsonBody): void {
-    const req = body as RepairRequest;
+    const req = body as unknown as RepairRequest;
     if (!req.testName || !req.errorOutput) {
       this.sendJson(res, 400, { ok: false, error: 'testName and errorOutput are required' });
       return;

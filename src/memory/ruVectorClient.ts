@@ -17,6 +17,7 @@
 
 import {
   GraphDatabase,
+  JsDistanceMetric,
   JsNode,
   JsEdge,
   JsHyperedge,
@@ -78,7 +79,7 @@ export class RuVectorClient {
     this.dimensions = config.dimensions ?? 128;
     this.db = new GraphDatabase({
       dimensions: this.dimensions,
-      distanceMetric: 'Cosine',
+      distanceMetric: JsDistanceMetric.Cosine,
       ...(config.storagePath ? { storagePath: config.storagePath } : {}),
     });
   }
