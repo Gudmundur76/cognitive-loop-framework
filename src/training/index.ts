@@ -25,6 +25,13 @@ export type { CorpusReadyStats, ReadyCallback } from './corpusWatcher.js';
 export { IncrementalTrainer } from './incrementalTrainer.js';
 export type { TrainerConfig, TrainingResult } from './incrementalTrainer.js';
 
+export { SIADatasetGenerator } from './siaDatasetGenerator.js';
+export type {
+  SIAPublicRecord,
+  SIAGroundTruthRecord,
+  SIADatasetConfig,
+} from './siaDatasetGenerator.js';
+
 import { ClaimsCorpusGenerator } from './claimsCorpusGenerator.js';
 import { CorpusWatcher } from './corpusWatcher.js';
 import { IncrementalTrainer } from './incrementalTrainer.js';
