@@ -17,7 +17,10 @@ export type {
   ContradictionEvent,
   EntityRecord,
   ClaimsTrainingPair,
+  AlpacaPair,
 } from './claimsCorpusGenerator.js';
+export { fetchVerifiedClaims, countNewVerifiedClaims, closeBridge } from './ttruthdeskBridge.js';
+export type { ClaimRecord } from './ttruthdeskBridge.js';
 
 export { CorpusWatcher } from './corpusWatcher.js';
 export type { CorpusReadyStats, ReadyCallback } from './corpusWatcher.js';
@@ -77,15 +80,15 @@ export function createTrainingPipeline(
     scriptPath:
       config.scriptPath ??
       process.env['FINETUNE_SCRIPT_PATH'] ??
-      '/opt/cognitive-loop/scripts/finetunePipeline.py',
+      '/opt/slm-infra-deploy/finetunePipeline.py',
     outputPath:
       config.outputPath ??
       process.env['TRAINING_OUTPUT_PATH'] ??
-      '/data/training/output',
+      '/opt/slm-infra-deploy/models/claim-verifier-latest',
     ollamaModelName:
       config.ollamaModelName ??
       process.env['TRAINING_MODEL'] ??
-      'qwen2.5-coder:7b',
+      'claim-verifier',
   });
 
   const watcher = new CorpusWatcher(

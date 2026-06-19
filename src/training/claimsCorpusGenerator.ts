@@ -19,6 +19,7 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
+import { fetchVerifiedClaims } from './ttruthdeskBridge.js';
 
 export interface VerdictEvent {
   claimId: string;
@@ -50,6 +51,13 @@ export interface ClaimsTrainingPair {
   output: string;
   type: 'classify' | 'extract' | 'contradict' | 'provenance' | 'score';
   claimId: string;
+}
+
+/** Alpaca-format training pair (ttruthdesk DB-backed generation) */
+export interface AlpacaPair {
+  instruction: string;
+  input: string;
+  output: string;
 }
 
 export class ClaimsCorpusGenerator {
@@ -146,7 +154,38 @@ export class ClaimsCorpusGenerator {
     };
   }
 
+  // ── DB-backed generation ─────────────────────────────────────────
+
+  /**
+   * Fetch verified claims from the ttruthdesk DB since `since` and
+   * append them to the corpus as Alpaca-format training pairs.
+   *
+   * Returns the number of examples written.
+   * Acceptance: produces a valid JSONL file with >=10 training examples.
+   */
+  public async generate(since: Date = new Date(0)): Promise<number> {
+    const claims = await fetchVerifiedClaims(since);
+    if (claims.length === 0) return 0;
+    const pairs: AlpacaPair[] = claims.map(c => ({
+      instruction:
+        'Verify the following scientific claim. Return a JSON object with verdict, confidence, and sources.',
+      input: c.claimText,
+      output: JSON.stringify({
+        verdict: c.verdict,
+        confidence: c.confidenceScore ?? 0.5,
+        sources: c.evidenceUrl ? [{ url: c.evidenceUrl }] : [],
+      }),
+    }));
+    this.appendAlpacaPairs(pairs);
+    return pairs.length;
+  }
+
   // ── File I/O ─────────────────────────────────────────────────────
+
+  private appendAlpacaPairs(pairs: AlpacaPair[]): void {
+    const lines = pairs.map(p => JSON.stringify(p));
+    fs.appendFileSync(this.outPath, lines.join('\n') + '\n', 'utf8');
+  }
 
   private appendToCorpus(pairs: ClaimsTrainingPair[]): void {
     const lines = pairs.map(p => JSON.stringify({

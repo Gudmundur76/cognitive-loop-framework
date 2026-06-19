@@ -74,7 +74,7 @@ export class IncrementalTrainer {
   }
 
   private refreshOllamaModel(): Promise<void> {
-    const modelName = this.config.ollamaModelName ?? 'claims-slm';
+    const modelName = this.config.ollamaModelName ?? 'claim-verifier';
     const modelfilePath = this.config.modelfilePath
       ?? path.join(path.dirname(this.config.scriptPath), 'Modelfile');
     const cmd = `ollama create ${modelName} -f ${modelfilePath}`;
@@ -83,7 +83,7 @@ export class IncrementalTrainer {
 
   private buildPythonCommand(): string {
     const parts = [
-      'python',
+      'python3',
       this.config.scriptPath,
       `--corpus ${this.config.corpusPath}`,
       `--output ${this.config.outputPath}`,
@@ -94,7 +94,9 @@ export class IncrementalTrainer {
 
   private execAsync(cmd: string): Promise<void> {
     return new Promise((resolve, reject) => {
-      this.execFn(cmd, (error) => {
+      this.execFn(cmd, (error, stdout, stderr) => {
+        if (stdout) console.log(`[IncrementalTrainer] stdout: ${stdout}`);
+        if (stderr) console.error(`[IncrementalTrainer] stderr: ${stderr}`);
         if (error) reject(error);
         else resolve();
       });
