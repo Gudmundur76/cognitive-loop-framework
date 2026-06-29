@@ -96,9 +96,14 @@ export function createTrainingPipeline(
     config.minPairsThreshold ?? 50
   );
 
-  // Wire the watcher to trigger the trainer automatically
+  // Wire the watcher to trigger the trainer automatically.
+  // After a successful run, call markTrainingComplete() so the watcher
+  // resets its baseline and does not re-trigger on the same examples.
   watcher.onReady(async (_stats) => {
-    await trainer.run();
+    const result = await trainer.run();
+    if (result.success) {
+      watcher.markTrainingComplete();
+    }
   });
 
   return { generator, watcher, trainer };
