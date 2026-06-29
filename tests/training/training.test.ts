@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
@@ -52,8 +52,11 @@ describe('ClaimsCorpusGenerator', () => {
 
   beforeEach(() => {
     tmpDir = os.tmpdir();
-    outPath = path.join(tmpDir, `test_claims_corpus_${Date.now()}.jsonl`);
+    outPath = path.join(tmpDir, `test_claims_corpus_${Date.now()}_${Math.random().toString(36).slice(2)}.jsonl`);
     generator = new ClaimsCorpusGenerator(outPath);
+  });
+  afterEach(() => {
+    if (fs.existsSync(outPath)) fs.unlinkSync(outPath);
   });
 
   it('generates classify, extract, provenance, and score pairs from a verdict event', () => {
