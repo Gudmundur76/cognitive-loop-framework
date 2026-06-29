@@ -17,6 +17,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { RuVectorClient } from './ruVectorClient.js';
+import { CTCMemory } from './ctcMemory.js';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 export type TriggerType =
@@ -68,15 +69,19 @@ export interface QueryResult {
 export class CompoundingLog {
   private readonly logPath: string;
   private readonly ruVector: RuVectorClient | null;
+  private readonly ctc: CTCMemory | null;
 
   /**
    * @param logPath   Absolute path to the JSONL log file.
    * @param ruVector  Optional RuVectorClient for hybrid search.
    *                  When omitted, querySimilar falls back to TF-IDF.
+   * @param ctc       Optional CTCMemory for CTC graph ingest.
+   *                  When omitted, CTC ingest is skipped.
    */
-  constructor(logPath: string, ruVector?: RuVectorClient) {
+  constructor(logPath: string, ruVector?: RuVectorClient, ctc?: CTCMemory) {
     this.logPath = logPath;
     this.ruVector = ruVector ?? null;
+    this.ctc = ctc ?? null;
     fs.mkdirSync(path.dirname(logPath), { recursive: true });
   }
 
@@ -96,6 +101,31 @@ export class CompoundingLog {
     // Fire-and-forget graph write — never blocks the caller
     if (this.ruVector) {
       void this.writeToGraph(stamped);
+    }
+
+    // Fire-and-forget CTC ingest — maps CompoundingEntry to CycleRecord
+    if (this.ctc?.isEnabled) {
+      void this.ctc.ingestCycle({
+        cycle_id: `compounding:${stamped.timestamp}`,
+        timestamp: stamped.timestamp,
+        task: stamped.test,
+        phases: {
+          Observe: stamped.trigger,
+          Think: stamped.diagnosis,
+          Verify: stamped.test_result,
+          Review: stamped.meta_review,
+        },
+        outcome:
+          stamped.test_result === 'PASS' && stamped.meta_review === 'APPROVED'
+            ? 'success'
+            : stamped.test_result === 'FAIL'
+              ? 'failure'
+              : 'partial',
+        learned: stamped.diagnosis,
+        test_name: stamped.test,
+        error_output:
+          stamped.test_result === 'FAIL' ? stamped.diagnosis : undefined,
+      });
     }
 
     return stamped;
