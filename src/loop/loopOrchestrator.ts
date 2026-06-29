@@ -20,6 +20,7 @@
 import type { MemoryLayer } from '../memory/index.js';
 import type { SelfPromptEngine } from '../slm/selfPromptEngine.js';
 import type { MetaAgent, SystemEvent } from './metaAgent.js';
+import { ScaffoldEvaluator } from './scaffoldEvaluator.js';
 
 export type LayerName = 'friction' | 'truth' | 'selfPrompt' | 'frontier' | 'meta';
 
@@ -50,6 +51,8 @@ export class LoopOrchestrator {
   private readonly slm: SelfPromptEngine;
   private readonly meta: MetaAgent;
   private readonly maxIterations: number;
+  private readonly scaffoldEvaluator: ScaffoldEvaluator;
+  private iterationCount = 0;
 
   constructor(
     memory: MemoryLayer,
@@ -61,6 +64,7 @@ export class LoopOrchestrator {
     this.slm = slm;
     this.meta = meta;
     this.maxIterations = config.maxIterations ?? 10;
+    this.scaffoldEvaluator = new ScaffoldEvaluator(meta);
   }
 
   /**
@@ -81,6 +85,9 @@ export class LoopOrchestrator {
       // If friction layer failed, no point retrying
       if (iterResults.find(r => r.layer === 'friction' && !r.passed)) break;
     }
+
+    // Evaluate any pending scaffold proposals before returning
+    await this.scaffoldEvaluator.evaluatePending();
 
     const events = this.meta.drainEvents();
     const completionPromise = this.buildCompletionPromise(allLayerResults);
@@ -159,11 +166,24 @@ export class LoopOrchestrator {
 
   private async runSelfPromptLayer(tsFiles: string[]): Promise<LayerResult> {
     const start = Date.now();
+    this.iterationCount++;
     try {
       const response = await this.slm.reason({
         mode: 'diagnose',
         context: `Analysing ${tsFiles.length} TypeScript file(s): ${tsFiles.join(', ')}`,
       });
+      // Every 5th iteration, also run dream mode and queue for scaffold evaluation
+      if (this.iterationCount % 5 === 0) {
+        const dreamResponse = await this.slm.reason({
+          mode: 'dream',
+          context: `Iteration ${this.iterationCount}: ${tsFiles.join(', ')}`,
+        });
+        this.scaffoldEvaluator.enqueue(
+          dreamResponse,
+          `iteration-${this.iterationCount}`,
+          this.iterationCount
+        );
+      }
       return {
         layer: 'selfPrompt',
         passed: true,

@@ -21,6 +21,7 @@ import * as http from 'http';
 import * as crypto from 'crypto';
 import { createTrainingPipeline, type TrainingPipeline } from '../training/index.js';
 import { CompoundingLog } from '../memory/compoundingLog.js';
+import { CTCMemory } from '../memory/ctcMemory.js';
 import { RuVectorClient, type RuVectorClientConfig } from '../memory/ruVectorClient.js';
 import { ASTIndexer } from '../indexer/astIndexer.js';
 import type { VerdictEvent } from '../training/claimsCorpusGenerator.js';
@@ -66,6 +67,7 @@ export class CognitiveLoopServer {
   private readonly config: Required<Omit<ServerConfig, 'ruVector'>> & { ruVector?: RuVectorClientConfig };
   private readonly pipeline: TrainingPipeline;
   private readonly log: CompoundingLog;
+  private readonly ctc: CTCMemory;
   private readonly ruVector: RuVectorClient | null;
   private readonly indexer: ASTIndexer | null;
   private server: http.Server | null = null;
@@ -116,6 +118,12 @@ export class CognitiveLoopServer {
       this.config.compoundingLogPath,
       this.ruVector ?? undefined
     );
+
+    // MRAgent CTC episodic memory — runs alongside the JSONL log
+    this.ctc = new CTCMemory();
+    if (this.ctc.isEnabled) {
+      console.log('[cognitive-loop] CTC episodic memory enabled (MRAgent ICML 2026)');
+    }
 
     this.indexer = this.ruVector
       ? new ASTIndexer(this.ruVector, { useMockEmbeddings: true })
@@ -219,6 +227,19 @@ export class CognitiveLoopServer {
       metadata: { verdict: event.verdict, pairsGenerated: pairs.length },
     });
 
+    // MRAgent CTC: ingest verdict event as an episodic cycle record
+    void this.ctc.ingestCycle({
+      cycle_id: `verdict-${event.claimId}-${Date.now()}`,
+      timestamp: new Date().toISOString(),
+      task: `Verdict evaluation: ${event.claimText?.slice(0, 120) ?? event.claimId}`,
+      phases: {
+        Observe: `Claim: ${event.claimText ?? event.claimId}`,
+        Verify: `Verdict: ${event.verdict} (confidence: ${event.confidence})`,
+      },
+      outcome: event.verdict === 'Supported' ? 'success' : 'partial',
+      learned: `Claim ${event.claimId} classified as ${event.verdict} with confidence ${event.confidence}`,
+    });
+
     this.sendJson(res, 200, {
       ok: true,
       pairsGenerated: pairs.length,
@@ -263,7 +284,7 @@ export class CognitiveLoopServer {
       return;
     }
 
-    void this.log.querySimilar(req.errorOutput, 6).then(similar => {
+    void this.log.querySimilar(req.errorOutput, 6).then(async similar => {
       const priorSuccess = similar.filter(r => r.entry.test_result === 'PASS');
       const priorFail = similar.filter(r => r.entry.test_result === 'FAIL');
 
@@ -283,12 +304,39 @@ export class CognitiveLoopServer {
         meta_review: 'PENDING',
       });
 
+      // MRAgent CTC: ingest repair cycle and attempt active reconstruction
+      void this.ctc.ingestCycle({
+        cycle_id: `repair-${req.testName}-${Date.now()}`,
+        timestamp: new Date().toISOString(),
+        task: `Repair: ${req.testName}`,
+        phases: {
+          Observe: `Test failure: ${req.testName}`,
+          Think: `Error: ${req.errorOutput.slice(0, 300)}`,
+          Plan: `Prior successes: ${priorSuccess.length}, prior failures: ${priorFail.length}`,
+        },
+        outcome: 'failure',
+        test_name: req.testName,
+        error_output: req.errorOutput.slice(0, 500),
+      });
+
+      // CTC reconstruction: find similar past repairs via active graph traversal
+      let ctcContext: string | undefined;
+      if (this.ctc.isEnabled) {
+        const reconstruction = await this.ctc.reconstruct(
+          `What repair strategies worked for test failures similar to: ${req.testName}?`
+        );
+        if (reconstruction.confidence !== 'low') {
+          ctcContext = reconstruction.answer;
+        }
+      }
+
       this.sendJson(res, 200, {
         ok: true,
         entryTimestamp: entry.timestamp,
         priorSuccessfulRepairs: priorSuccess.length,
         priorFailedRepairs: priorFail.length,
         context: this.buildRepairContext(req, priorSuccess.map(r => r.entry)),
+        ctcReconstructedContext: ctcContext,
       });
     });
   }
