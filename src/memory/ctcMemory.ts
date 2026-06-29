@@ -89,10 +89,11 @@ async function callSidecar<T>(method: string, args: Record<string, unknown>): Pr
     proc.stdout.on('data', (d: Buffer) => (stdout += d.toString()));
     proc.stderr.on('data', (d: Buffer) => (stderr += d.toString()));
 
+    const SIDECAR_TIMEOUT_MS = parseInt(process.env['CTC_SIDECAR_TIMEOUT_MS'] ?? '6000', 10);
     const timer = setTimeout(() => {
       proc.kill();
-      reject(new Error('CTC sidecar timeout (60s)'));
-    }, 60_000);
+      reject(new Error(`CTC sidecar timeout (${SIDECAR_TIMEOUT_MS}ms)`));
+    }, SIDECAR_TIMEOUT_MS);
 
     proc.on('close', (code: number) => {
       clearTimeout(timer);
@@ -119,8 +120,9 @@ export class CTCMemory {
 
   constructor(dbPath = CTC_DB_PATH) {
     this.dbPath = dbPath;
-    this.enabled = existsSync(EVOLVA_MRAGENT_PATH) && existsSync(SIDECAR_PATH);
-    if (!this.enabled) {
+    const forceDisabled = process.env['CTC_DISABLED'] === '1';
+    this.enabled = !forceDisabled && existsSync(EVOLVA_MRAGENT_PATH) && existsSync(SIDECAR_PATH);
+    if (!this.enabled && !forceDisabled) {
       console.warn('[CTCMemory] evolva-mragent not found — CTC memory disabled');
     }
   }
